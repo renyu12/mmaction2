@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+# renyu: input a local video, detect human body, infer skeleton, predict action from skeleton, write visualized result into a output video
 import argparse
 import tempfile
 
