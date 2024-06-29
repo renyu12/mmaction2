@@ -42,11 +42,33 @@ try:
 except (ImportError, ModuleNotFoundError):
     has_mmdet = False
 
+# for random select music
+import random
+
 # renyu: sould lib for Windows (other platform may need to change it)
 #        set the the pair of (action name, sound file) here
-import winsound
+#        (can't play 2 music together, deprecated)
+#import winsound
+import pygame
 SOUND_DICT = {
     'beatboxing': 'happy.wav'
+}
+
+# renyu: play different kinds of music according to the number of people
+#        randomly choose from the list
+BGM_DICT = {
+    0 : ['0after_the_rain.mp3'],
+    1 : ['1cafe_train.mp3'],
+    2 : ['2background_dreams.mp3'],
+    3 : ['3be_happy.mp3','3lovely_sunny_day.mp3']
+}
+
+# renyu: add meme picture on the screen
+PICTURE_DICT = {
+    'drinking': 'spillTea.jpg',
+    'drinking beer': 'spillTea.jpg',
+    'drinking shots': 'spillTea.jpg',
+    'beatboxing': "big.jpg"
 }
 
 # renyu: set the camera resolution, but not all the resolution can be supported, only several levels are valid
@@ -103,6 +125,11 @@ def parse_args():
         type=int,
         default=1,
         help='number of latest clips to be averaged for prediction')
+    parser.add_argument(
+        '--sample-interval',
+        type=int,
+        default=3,
+        help='every sample_interval frames to sample one')
     parser.add_argument(
         '--drawing-fps',
         type=int,
@@ -192,7 +219,36 @@ def parse_args():
         'positive number, or zero for no limit'
     return args
 
-# renyu:
+def add_meme_image_on_origin_image(origin_img, action_name):
+    if action_name in PICTURE_DICT:
+        try:
+            meme_overlay = cv2.imread(PICTURE_DICT[action_name])
+        except:
+            print("no picture ", PICTURE_DICT[action_name])
+            return
+       
+        # renyu: constrain the max side length
+        max_side_length = 400
+
+        # renyu: keep the meme the fixed size, or it may overflow
+        ov_height, ov_width = meme_overlay.shape[:2]
+
+        if ov_height > ov_width:
+            scale = max_side_length / ov_height
+        else:
+            scale = max_side_length / ov_width
+
+        new_height = int(ov_height * scale)
+        new_width = int(ov_width * scale)
+
+        meme_overlay = cv2.resize(meme_overlay, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        x_offset = (CAMERAWIDTH - new_width) // 2
+        y_offset = (CAMERAHEIGHT - new_height) // 2
+
+        origin_img[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = meme_overlay
+
+# renyu: human detection and pose estimation
 def draw_skeleton_and_show_one_frame(args,
                                      img,
                                      detector,
@@ -209,6 +265,7 @@ def draw_skeleton_and_show_one_frame(args,
     bboxes = bboxes[np.logical_and(pred_instance.labels == args.det_cat_id,
                                    pred_instance.scores > args.bbox_thr)]
     bboxes = bboxes[nms(bboxes, args.nms_thr), :4]
+    global stars_number
     stars_number = len(bboxes) # renyu: update the number of people
 
     # renyu: show the human number in the lower left corner of screen
@@ -264,6 +321,7 @@ def show_skeleton_and_action_from_camera():
     print('camera_fps:', camera_fps, ' camera_width:', camera_width, ' camera_height:', camera_height)
     
     count = 0
+    sample_count = 0
     while True:
         no_action_msg = 'Waiting for action ...'
         _, frame = camera.read()
@@ -280,7 +338,13 @@ def show_skeleton_and_action_from_camera():
                 continue
             count = 0
 
-        frame_queue.append(np.array(frame[:, :, ::-1]))
+        # renyu: do frame sample here, but in the start phrase we don't wait
+        sample_count += 1
+        if len(frame_queue) < sample_length:
+            frame_queue.append(np.array(frame[:, :, ::-1]))
+        elif sample_count % sample_interval == 0:
+            frame_queue.append(np.array(frame[:, :, ::-1]))
+            sample_count = 0
 
         # renyu: read action recognition results from the queue and draw it on the frame
         if len(action_queue) != 0:
@@ -303,6 +367,7 @@ def show_skeleton_and_action_from_camera():
                     else:
                         text = selected_label + ': ' + str(round(score * 100, 2)) + ' !'
                         font_color = SPECIALFONTCOLOR
+                        add_meme_image_on_origin_image(frame, selected_label)
                     
                     text_info[location] = text
                     cv2.putText(frame, text, location, FONTFACE, FONTSCALE,
@@ -425,13 +490,40 @@ def make_sound():
                     #        check if it in the dict and meet the sound threshold
                     action_name, action_score = sound_queue.popleft()
                     if action_name in SOUND_DICT and action_score >= sound_threshold:
-                        print("play sound: ", SOUND_DICT[action_name])
-                        winsound.PlaySound(SOUND_DICT[action_name], winsound.SND_FILENAME)
+                        print("action: ", action_name, " play sound: ", SOUND_DICT[action_name])
+                        #winsound.PlaySound(SOUND_DICT[action_name], winsound.SND_FILENAME)
+
+                        # renyu: play sound and wait for its end
+                        sound_effect = pygame.mixer.Sound(SOUND_DICT[action_name])
+                        sound_effect.play()
+                        time.sleep(sound_effect.get_length())
                     else:
-                        print(action_name, "not in the list.")
+                        print(action_name, "not in the list or not meet the threshold.")
 
 def make_bgm():
-    pass
+    time.sleep(5)
+    print('BGM starts.')
+    while True:
+        # renyu: avoid two sound too close
+        time.sleep(args.sound_interval)
+
+        global stars_number
+        cur_people = stars_number
+        if cur_people > 3:
+            cur_people = 3
+        bgm_name = random.sample(BGM_DICT[cur_people], 1)[0]
+        print("stars number: ", cur_people, " play bgm: ", bgm_name)
+        sound_bgm = pygame.mixer.Sound(bgm_name)
+        bgm_channel = sound_bgm.play()
+
+        # renyu: check if we need to change the music every 30s
+        #        if one song is over or the people number changes, then change the music
+        while True:
+            time.sleep(30)
+            if bgm_channel.get_busy() is not True or cur_people != stars_number:
+                bgm_channel.fadeout(3000)
+                time.sleep(3)
+                break
 
 def main():
     # renyu: make a lot of global value to simplify the parameter pass between threads
@@ -439,7 +531,7 @@ def main():
         device, model, camera, data, label, sample_length, \
         test_pipeline, frame_queue, action_queue, sound_queue, \
         detector, pose_estimator, visualizer, args, \
-        stars_number
+        stars_number, sample_interval
 
     args = parse_args()
 
@@ -453,6 +545,7 @@ def main():
     sound_threshold = args.sound_threshold
     drawing_fps = args.drawing_fps
     inference_fps = args.inference_fps
+    sample_interval = args.sample_interval
 
     device = torch.device(args.device)
 
@@ -508,6 +601,11 @@ def main():
         print("no test or val pipeline config!")
         assert pipeline is not None
     '''
+
+    # renyu: create the webcam real-time app pipeline
+    #        an important change is that we can't sample too much frames for too long
+    #        because we don't have a whole offline video and have enought time to process
+    #        just remove the 'SampleFrames' step. instead, we sample every M frames and get N frames as input
     pipeline = cfg.test_pipeline
     print(pipeline)
     pipeline_ = pipeline.copy()
@@ -524,6 +622,9 @@ def main():
 
     assert sample_length > 0
 
+    # renyu: init the sound player
+    pygame.mixer.init()
+
     try:
         frame_queue = deque(maxlen=sample_length)
         action_queue = deque(maxlen=1)
@@ -532,10 +633,12 @@ def main():
         thread_show = Thread(target=show_skeleton_and_action_from_camera, args=(), daemon=True)
         thread_recognize = Thread(target=action_recognize, args=(), daemon=True)
         thread_sound = Thread(target=make_sound, args=(), daemon=True)
+        thread_bgm = Thread(target=make_bgm, args=(), daemon=True)
         
         thread_show.start()
         thread_recognize.start()
         thread_sound.start()
+        thread_bgm.start()
         
         # renyu: if show thread quits then quit the whole app
         thread_show.join()
